@@ -15,6 +15,7 @@ type User struct {
 	UserEmail     string `json:"userEmail"`
 	UserPhone     string `json:"userPhone"`
 	UserAddress   string `json:"userAddress"`
+	UserPassword   string `json:"userPassword"`
 	UserStatus    string `json:"userStatus"`
 	UserCreatedAt string `json:"userCreatedAt"`
 	UserUpdatedAt string `json:"userUpdatedAt"`
@@ -658,4 +659,5 @@ func (s *SmartContract) GetAllUsers(ctx contractapi.TransactionContextInterface)
 
 	return users, nil
 }
+
 
