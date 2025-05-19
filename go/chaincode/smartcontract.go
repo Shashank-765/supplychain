@@ -16,7 +16,10 @@ type User struct {
 	UserPhone     string `json:"userPhone"`
 	UserAddress   string `json:"userAddress"`
 	UserPassword   string `json:"userPassword"`
+	UserWalletAddress string `json:"userWalletAddress"`
+	UserBuyProducts   []Buy  `json:"userBuyProducts"` // 👈 optional
 	UserStatus    string `json:"userStatus"`
+	UserIsDeleted string `json:"userIsDeleted"`
 	UserCreatedAt string `json:"userCreatedAt"`
 	UserUpdatedAt string `json:"userUpdatedAt"`
 	UserDeletedAt string `json:"userDeletedAt"`
@@ -122,6 +125,25 @@ type Batch struct {
 	ProcessorId         string `json:"processorId"`
 	ExporterId          string `json:"exporterId"`
 	ImporterId          string `json:"importerId"`
+	BatchStatus         string `json:"batchStatus"`
+	BatchIsDeleted       string `json:"batchIsDeleted"`
+	BatchCreatedAt      string `json:"batchCreatedAt"`
+	BatchUpdatedAt      string `json:"batchUpdatedAt"`
+	BatchDeletedAt      string `json:"batchDeletedAt"`
+	BatchCreatedBy      string `json:"batchCreatedBy"`
+	BatchUpdatedBy      string `json:"batchUpdatedBy"`
+	BatchDeletedBy      string `json:"batchDeletedBy"`
+}
+type Buy struct {
+	BatchId      string `json:"batchId"`
+	TransactionId string `json:"transactionId"`
+	BuyerId      string `json:"buyerId"`
+	SellerId      string `json:"sellerId"`
+	Quantity     string `json:"quantity"`
+	Price        string `json:"price"`
+	BuyStatus    string `json:"buyStatus"`
+	BuyCreatedAt string `json:"buyCreated"`
+	BuyUpdatedAt string `json:"buyUpdated"`
 }
 
 // Smart Contract Structure
@@ -315,6 +337,70 @@ func (s *SmartContract) CreateProcessor(ctx contractapi.TransactionContextInterf
 	return nil
 }
 
+// CreateBuy creates a new buy record with composite key Buy~BatchId~TransactionId and updates the user's buy history
+func (s *SmartContract) CreateBuy(ctx contractapi.TransactionContextInterface, buy Buy) error {
+	// Create a composite key using batchId and transactionId
+	compositeKey, err := ctx.GetStub().CreateCompositeKey("Buy", []string{buy.BatchId, buy.TransactionId})
+	if err != nil {
+		return fmt.Errorf("failed to create composite key: %v", err)
+	}
+
+	// Check if this specific transaction already exists
+	existing, err := ctx.GetStub().GetState(compositeKey)
+	if err != nil {
+		return fmt.Errorf("failed to check existing transaction: %v", err)
+	}
+	if existing != nil {
+		return fmt.Errorf("buy transaction already exists for BatchId %s and TransactionId %s", buy.BatchId, buy.TransactionId)
+	}
+
+	// Marshal the buy object
+	buyJSON, err := json.Marshal(buy)
+	if err != nil {
+		return fmt.Errorf("failed to marshal buy: %v", err)
+	}
+
+	// Save the buy record with composite key
+	err = ctx.GetStub().PutState(compositeKey, buyJSON)
+	if err != nil {
+		return fmt.Errorf("failed to save buy: %v", err)
+	}
+
+	// Get the buyer user data
+	userJSON, err := ctx.GetStub().GetState(buy.BuyerId)
+	if err != nil {
+		return fmt.Errorf("failed to get user %s: %v", buy.BuyerId, err)
+	}
+	if userJSON == nil {
+		return fmt.Errorf("user with ID %s does not exist", buy.BuyerId)
+	}
+
+	var user User
+	err = json.Unmarshal(userJSON, &user)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal user data: %v", err)
+	}
+
+	// Append buy to UserBuyProducts
+	user.UserBuyProducts = append(user.UserBuyProducts, buy)
+
+	// Marshal updated user
+	updatedUserJSON, err := json.Marshal(user)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated user: %v", err)
+	}
+
+	// Save updated user state
+	err = ctx.GetStub().PutState(user.UserId, updatedUserJSON)
+	if err != nil {
+		return fmt.Errorf("failed to save updated user: %v", err)
+	}
+
+	return nil
+}
+
+
+
 // Update Functions
 
 func (s *SmartContract) UpdateUser(ctx contractapi.TransactionContextInterface, user User) error {
@@ -473,23 +559,29 @@ func (s *SmartContract) UpdateProcessor(ctx contractapi.TransactionContextInterf
 }
 
 
-// ViewBatch retrieves the batch details by batchId
+// ViewUser retrieves the user details by userId
 func (s *SmartContract) ViewUser(ctx contractapi.TransactionContextInterface, userId string) (User, error) {
-	// Fetch batch details
+	// Fetch user details
 	userJSON, err := ctx.GetStub().GetState(userId)
 	if err != nil || userJSON == nil {
 		return User{}, fmt.Errorf("User with ID %s does not exist", userId)
 	}
 
 	// Unmarshal the data
-	var batch User
-	err = json.Unmarshal(userJSON, &batch)
+	var user User
+	err = json.Unmarshal(userJSON, &user)
 	if err != nil {
-		return User{}, fmt.Errorf("Failed to unmarshal batch data: %v", err)
+		return User{}, fmt.Errorf("Failed to unmarshal user data: %v", err)
 	}
 
-	return batch, nil
+	// 👇 Ensure userBuyProducts is always initialized
+	if user.UserBuyProducts == nil {
+		user.UserBuyProducts = []Buy{}
+	}
+
+	return user, nil
 }
+
 
 
 
@@ -631,8 +723,7 @@ func (s *SmartContract) GetAllBatches(ctx contractapi.TransactionContextInterfac
 	return batches, nil
 }
 
-
-// GetAllUseres retrieves all batch records from the ledger
+// GetAllUsers retrieves all user records from the ledger
 func (s *SmartContract) GetAllUsers(ctx contractapi.TransactionContextInterface) ([]User, error) {
 	queryIterator, err := ctx.GetStub().GetStateByRange("", "")
 	if err != nil {
@@ -648,16 +739,51 @@ func (s *SmartContract) GetAllUsers(ctx contractapi.TransactionContextInterface)
 			return nil, fmt.Errorf("Failed to iterate over results: %v", err)
 		}
 
-		var batch User
-		err = json.Unmarshal(queryResponse.Value, &batch)
+		var user User
+		err = json.Unmarshal(queryResponse.Value, &user)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to unmarshal batch data: %v", err)
+			return nil, fmt.Errorf("Failed to unmarshal user data: %v", err)
 		}
 
-		users = append(users, batch)
+		// 👇 Ensure userBuyProducts is always initialized
+		if user.UserBuyProducts == nil {
+			user.UserBuyProducts = []Buy{}
+		}
+
+		users = append(users, user)
 	}
 
 	return users, nil
 }
+
+
+
+
+// GetBuyTransactionsByBatchId returns all buy transactions for a specific BatchId
+func (s *SmartContract) GetBuyTransactionsByBatchId(ctx contractapi.TransactionContextInterface, batchId string) ([]*Buy, error) {
+	iterator, err := ctx.GetStub().GetStateByPartialCompositeKey("Buy", []string{batchId})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transactions for batchId %s: %v", batchId, err)
+	}
+	defer iterator.Close()
+
+	var buys []*Buy
+	for iterator.HasNext() {
+		queryResponse, err := iterator.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		var buy Buy
+		err = json.Unmarshal(queryResponse.Value, &buy)
+		if err != nil {
+			return nil, err
+		}
+		buys = append(buys, &buy)
+	}
+
+	return buys, nil
+}
+
 
 
